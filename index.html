@@ -5203,10 +5203,10 @@ function updateFpsPanel(fps, dt4){
   if(avgEl) avgEl.textContent='avg '+avg;
   if(ftEl) ftEl.textContent=(dt4*1000).toFixed(1)+'ms';
   // Babylon.js scene stats
-  const _activeMeshArr = scene.getActiveMeshes ? Array.from(scene.getActiveMeshes()) : [];
+  const _activeMeshArr = scene.getActiveMeshes ? (scene.getActiveMeshes().data ? Array.from(scene.getActiveMeshes().data) : []) : [];
   if(drawEl) drawEl.textContent = _activeMeshArr.length;
   if(triEl){
-    const tris = _activeMeshArr.reduce((s,m)=>s+(m.getTotalIndices?m.getTotalIndices()/3:0),0);
+    const tris = _activeMeshArr.reduce((s,m)=>s+(m&&m.getTotalIndices?m.getTotalIndices()/3:0),0);
     triEl.textContent = tris>1000?(tris/1000).toFixed(1)+'k':Math.round(tris);
   }
   if(plotsEl){ let active=0,mature=0; state.plots.forEach(p=>{(p.plants||[]).forEach(pl=>{active++;if(pl.mature)mature++;})}); plotsEl.textContent=`${active} plants, ${mature} ready`; }
@@ -7579,296 +7579,252 @@ window.mpPushFarmState = async function(){
 // This ensures data isn't lost if browser closes between 5s intervals
 window.addEventListener('beforeunload', ()=>{ mpPushFarmState(); });
 
-// ═══════════════ MISSING UTILITY FUNCTIONS ═══════════════
+// ═══════════════ MISSING CORE FUNCTIONS ═══════════════
 
-// ── notify ──────────────────────────────────────────────────────────────────
+// ── notify ──────────────────────────────────────────
+let _notifTimer = null;
 function notify(msg, type=''){
   const el = document.getElementById('notif');
   if(!el) return;
-  const div = document.createElement('div');
-  div.className = 'notif-msg' + (type ? ' notif-'+type : '');
-  div.style.cssText = `
-    background:rgba(4,14,8,0.92);border:1.5px solid rgba(80,220,120,0.28);
-    border-radius:12px;padding:10px 18px;font-size:13px;font-weight:700;
-    color:#e8f4ec;box-shadow:0 4px 18px rgba(0,0,0,0.5);
-    backdrop-filter:blur(10px);pointer-events:none;
-    animation:notifIn 0.25s ease,notifOut 0.4s ease 2.6s forwards;
-    white-space:nowrap;max-width:340px;
-  `;
-  if(type==='gold') div.style.borderColor='rgba(245,200,66,0.45)';
-  if(type==='warn') div.style.borderColor='rgba(255,80,80,0.45)';
-  if(type==='mut')  div.style.borderColor='rgba(180,60,255,0.45)';
-  if(type==='pet')  div.style.borderColor='rgba(80,180,255,0.45)';
-  div.textContent = msg;
-  el.appendChild(div);
-  setTimeout(()=>{ if(div.parentNode) div.parentNode.removeChild(div); }, 3200);
+  el.textContent = msg;
+  el.className = type || '';
+  el.style.display = 'block';
+  if(_notifTimer) clearTimeout(_notifTimer);
+  _notifTimer = setTimeout(()=>{ el.style.display='none'; }, 3500);
 }
-// Inject keyframes if not already present
-(function(){
-  if(!document.getElementById('notif-style')){
-    const s = document.createElement('style');
-    s.id = 'notif-style';
-    s.textContent = `
-      #notif{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
-             display:flex;flex-direction:column;align-items:center;gap:6px;z-index:9000;pointer-events:none;}
-      @keyframes notifIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-      @keyframes notifOut{from{opacity:1}to{opacity:0;transform:translateY(-6px)}}
-    `;
-    document.head.appendChild(s);
-  }
-})();
 
-// ── hasUpg ──────────────────────────────────────────────────────────────────
-function hasUpg(key){ return !!state.upgrades[key]; }
-
-// ── sellMult ─────────────────────────────────────────────────────────────────
+// ── sellMult / yieldCount / growSpeedMult ───────────
 function sellMult(){
   let m = 1;
-  if(hasUpg('sellboost1')) m *= UPGRADES.sellboost1.value;
-  if(hasUpg('sellboost2')) m *= UPGRADES.sellboost2.value;
+  if(state.upgrades['sellboost1']) m *= 1.25;
+  if(state.upgrades['sellboost2']) m *= 1.6;
+  return m;
+}
+function yieldCount(){
+  if(state.upgrades['yield2']) return 3;
+  if(state.upgrades['yield1']) return 2;
+  return 1;
+}
+function growSpeedMult(){
+  let m = 1;
+  if(state.upgrades['speedy1']) m *= 1.25;
+  if(state.upgrades['speedy2']) m *= 1.6;
+  if(state.upgrades['speedy3']) m *= 2.5;
   return m;
 }
 
-// ── updateHUD ────────────────────────────────────────────────────────────────
+// ── updateHUD ────────────────────────────────────────
 function updateHUD(){
   const el = document.getElementById('sheckles-val');
   if(el) el.textContent = '¢' + Math.floor(state.sheckles).toLocaleString();
 }
 
-// ── renderHotbar ─────────────────────────────────────────────────────────────
+// ── renderHotbar ─────────────────────────────────────
 function renderHotbar(){
-  const bar = document.getElementById('hotbar');
-  if(!bar) return;
-  bar.innerHTML = '';
+  const el = document.getElementById('hotbar');
+  if(!el) return;
+  el.innerHTML = '';
   state.hotbar.forEach((slot, i)=>{
     const div = document.createElement('div');
-    div.className = 'hotbar-slot' + (i===activeSlot ? ' active' : '');
-    div.title = slot ? `${SEEDS[slot.type]?.name||slot.type} ×${slot.qty}` : 'Empty';
+    div.className = 'hb-slot' + (i === activeSlot ? ' active' : '');
+    div.dataset.idx = i;
     div.onclick = ()=>{ activeSlot = i; renderHotbar(); };
     if(slot){
       const sd = SEEDS[slot.type];
-      const rm = sd ? RARITY_META[sd.rarity] : null;
-      div.innerHTML = `<span class="hs-em">${sd?.emoji||'?'}</span><span class="hs-qty">×${slot.qty}</span>`;
-      if(rm) div.classList.add(rm.sc);
-    } else {
-      div.innerHTML = `<span class="hs-num">${i+1}</span>`;
+      div.innerHTML = `<span style="font-size:20px">${sd ? sd.emoji : '?'}</span>
+        <span style="font-size:9px;color:#aaa;display:block">${sd ? sd.name : slot.type}</span>
+        <span style="font-size:10px;color:#ffee88">${slot.qty}</span>`;
     }
-    bar.appendChild(div);
+    el.appendChild(div);
   });
 }
 
-// ── updateUpgradesHUD ────────────────────────────────────────────────────────
+// ── updateUpgradesHUD ─────────────────────────────────
 function updateUpgradesHUD(){
-  // Refreshes upgrade dialog if open; lightweight — just re-renders if visible
-  if(document.getElementById('upgrade-dialog')?.style.display==='flex') renderUpgradeStand();
+  const el = document.getElementById('upgrades-hud');
+  if(!el) return;
+  const owned = Object.keys(UPGRADES).filter(k=>state.upgrades[k]);
+  el.innerHTML = owned.map(k=>`<span title="${UPGRADES[k].name}">${UPGRADES[k].emoji}</span>`).join(' ');
 }
 
-// ── _doRestockShop / restockShop ─────────────────────────────────────────────
+// ── closeUpgradeShop ──────────────────────────────────
+function closeUpgradeShop(){ closeNavTab(); }
+
+// ── sellAll ───────────────────────────────────────────
+function sellAll(){
+  let total = 0;
+  Object.keys(state.harvest).forEach(k=>{
+    total += (state.harvest[k]||[]).reduce((s,i)=>s+i.value,0);
+    state.harvest[k] = [];
+  });
+  if(!total){ notify('Nothing to sell!','warn'); return; }
+  state.sheckles += total;
+  updateHUD(); renderSell(); if(invOpen) renderInventory();
+  mpPushFarmState();
+  notify(`💰 Sold everything for ¢${total.toLocaleString()}!`,'gold');
+}
+
+// ── _doRestockShop ────────────────────────────────────
 function _doRestockShop(){
-  const rarityQty = { common:10, uncommon:6, rare:4, legendary:2, mythical:1 };
-  Object.keys(SEEDS).forEach(key=>{
-    const sd = SEEDS[key];
-    if(sd.seasonal) return; // seasonal seeds not in permanent shop stock
-    const base = rarityQty[sd.rarity] || 3;
-    shopStock[key] = base + Math.floor(Math.random()*3);
+  Object.keys(SEEDS).forEach(k=>{
+    const sd = SEEDS[k];
+    if(sd.seasonal) return; // seasonal seeds managed separately
+    shopStock[k] = sd.rarity === 'common' ? 10
+      : sd.rarity === 'uncommon' ? 6
+      : sd.rarity === 'rare' ? 4
+      : sd.rarity === 'legendary' ? 2 : 1;
   });
-  // Stock the current season's seeds too
-  getCurrentSeasonSeeds().forEach(sd=>{
-    shopStock[sd.key] = 4 + Math.floor(Math.random()*3);
-  });
+  // Add current seasonal seeds
+  getCurrentSeasonSeeds().forEach(sd=>{ shopStock[sd.key] = 3; });
+  restockTimer = 300;
+  const fill = document.getElementById('restock-fill');
+  const label = document.getElementById('restock-label');
+  if(fill) fill.style.width = '100%';
+  if(label) label.textContent = '5:00';
 }
-function restockShop(){ _doRestockShop(); }
 
-// ── renderShop ───────────────────────────────────────────────────────────────
+// ── renderShop ────────────────────────────────────────
 function renderShop(){
   const grid = document.getElementById('shop-grid');
   if(!grid) return;
   grid.innerHTML = '';
-
-  const allSeeds = [];
-  // Permanent seeds
-  Object.entries(SEEDS).forEach(([key, sd])=>{
-    if(!sd.seasonal) allSeeds.push({key, ...sd});
-  });
-  // Current season seeds
-  getCurrentSeasonSeeds().forEach(sd=>{ allSeeds.push({key:sd.key, ...SEEDS[sd.key], seasonal:true}); });
-
-  allSeeds.forEach(sd=>{
-    const key = sd.key;
-    const qty = shopStock[key] ?? 0;
+  // Regular seeds grouped by rarity
+  const rarityOrder = ['common','uncommon','rare','legendary','mythical'];
+  const allKeys = Object.keys(SEEDS).filter(k=>!SEEDS[k].seasonal);
+  // Also include current seasonal seeds
+  const seasonKeys = getCurrentSeasonSeeds().map(sd=>sd.key);
+  const allShopKeys = [...allKeys, ...seasonKeys.filter(k=>!allKeys.includes(k))];
+  allShopKeys.forEach(key=>{
+    const sd = SEEDS[key];
+    if(!sd) return;
+    const qty = shopStock[key] !== undefined ? shopStock[key] : (sd.seasonal ? 3 : 0);
     const rm = RARITY_META[sd.rarity] || RARITY_META.common;
+    const soldOut = qty <= 0;
     const card = document.createElement('div');
-    card.className = `sg-item ${rm.sc}`;
-    card.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 8px;border-radius:12px;cursor:pointer;transition:all 0.15s;position:relative;';
-    if(qty<=0) card.style.opacity='0.45';
+    card.className = 'sg-card' + (soldOut ? ' sold-out' : '');
     card.innerHTML = `
-      <span style="font-size:28px;">${sd.emoji||'🌱'}</span>
-      <span style="font-size:11px;font-weight:900;color:#fff;">${sd.name}</span>
-      <span class="${rm.tc}" style="font-size:9px;text-transform:uppercase;letter-spacing:1px;">${rm.label}</span>
-      <span style="font-size:12px;font-weight:900;color:#f5c842;">¢${sd.buyPrice.toLocaleString()}</span>
-      <span style="font-size:10px;color:#666;">${qty>0?'In stock: '+qty:'Sold out'}</span>
+      <div class="sg-icon">${sd.emoji}</div>
+      <div class="sg-name">${sd.name}</div>
+      <div class="sg-rarity ${rm.sc}">${rm.label}</div>
+      <div class="sg-price">¢${sd.buyPrice.toLocaleString()}</div>
+      <div class="sg-stock">${soldOut ? 'Sold Out' : `Stock: ${qty}`}</div>
     `;
-    if(qty>0){
-      card.onclick = ()=>{ buyShopSeed(key); };
-      card.onmouseenter = ()=>card.style.background='rgba(255,255,255,0.07)';
-      card.onmouseleave = ()=>card.style.background='';
+    if(!soldOut){
+      card.style.cursor = 'pointer';
+      card.onclick = ()=> buySeed(key);
     }
     grid.appendChild(card);
   });
 }
 
-function buyShopSeed(key){
+// ── buySeed ───────────────────────────────────────────
+function buySeed(key){
   const sd = SEEDS[key];
   if(!sd){ notify('Unknown seed!','warn'); return; }
-  if((shopStock[key]||0)<=0){ notify('Sold out!','warn'); return; }
   if(state.sheckles < sd.buyPrice){ notify(`Not enough Sheckles! Need ¢${sd.buyPrice.toLocaleString()}`,'warn'); return; }
-  // Try to add to hotbar
-  const existing = state.hotbar.findIndex(s=>s&&s.type===key);
-  if(existing>=0){ state.hotbar[existing].qty++; }
-  else {
-    const empty = state.hotbar.findIndex(s=>!s);
-    if(empty>=0){ state.hotbar[empty]={type:key,qty:1}; }
-    else {
-      // Overflow to seedBag
-      if(!state.seedBag) state.seedBag=[];
-      const inBag = state.seedBag.findIndex(s=>s&&s.type===key);
-      if(inBag>=0) state.seedBag[inBag].qty++;
-      else state.seedBag.push({type:key,qty:1});
-    }
+  const qty = shopStock[key] !== undefined ? shopStock[key] : 0;
+  if(qty <= 0){ notify('Sold out!','warn'); return; }
+  // Try to place in hotbar
+  let placed = false;
+  for(let i=0;i<state.hotbar.length;i++){
+    if(!state.hotbar[i]){ state.hotbar[i]={type:key,qty:1}; placed=true; break; }
+    if(state.hotbar[i].type===key){ state.hotbar[i].qty++; placed=true; break; }
+  }
+  if(!placed){
+    // overflow into seed bag
+    const sb = state.seedBag.find(s=>s.type===key);
+    if(sb) sb.qty++; else state.seedBag.push({type:key,qty:1});
   }
   state.sheckles -= sd.buyPrice;
-  shopStock[key]--;
-  updateHUD(); renderHotbar(); renderShop();
-  notify(`🌱 Bought ${sd.name} seed!`);
-  if(typeof mpPushFarmState==='function') mpPushFarmState();
+  if(shopStock[key] !== undefined) shopStock[key]--;
+  updateHUD(); renderShop(); renderHotbar();
+  notify(`${sd.emoji} Bought ${sd.name} for ¢${sd.buyPrice.toLocaleString()}!`);
 }
 
-// ── renderSell ────────────────────────────────────────────────────────────────
+// ── renderSell ────────────────────────────────────────
 function renderSell(){
   const grid = document.getElementById('sell-grid');
   if(!grid) return;
   grid.innerHTML = '';
-  const harvest = state.harvest || {};
-  let hasAnything = false;
-
-  Object.entries(harvest).forEach(([key, crops])=>{
-    if(!crops||!crops.length) return;
-    hasAnything = true;
-    const sd = SEEDS[key];
+  const types = Object.keys(state.harvest).filter(k=>(state.harvest[k]||[]).length>0);
+  if(!types.length){
+    grid.innerHTML = '<div style="color:rgba(255,255,255,0.3);font-size:13px;text-align:center;padding:20px 0">No crops to sell yet.<br>Harvest from your plots!</div>';
+    return;
+  }
+  // Group by type+mutation
+  const groups = {};
+  types.forEach(type=>{
+    (state.harvest[type]||[]).forEach(item=>{
+      const mut = item.mutation||'';
+      const gk = type+'|'+mut;
+      if(!groups[gk]) groups[gk]={type,mutation:mut,items:[]};
+      groups[gk].items.push(item);
+    });
+  });
+  Object.values(groups).forEach(g=>{
+    const sd = SEEDS[g.type];
     if(!sd) return;
-    const rm = RARITY_META[sd.rarity] || RARITY_META.common;
-    const totalVal = crops.reduce((acc, crop)=>{
-      const mutM = crop.mutationType ? (crop.mutationType==='rainbow'?4:crop.mutationType==='mau'?10:crop.mutationType==='golden'?2:1.5) : 1;
-      return acc + Math.floor(sd.sellPrice * mutM * sellMult() * _petSellMult);
-    }, 0);
-
+    const total = g.items.reduce((s,i)=>s+i.value,0);
     const card = document.createElement('div');
-    card.className = `sg-item ${rm.sc}`;
-    card.style.cssText='display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 8px;border-radius:12px;cursor:pointer;transition:all 0.15s;';
-    card.innerHTML=`
-      <span style="font-size:26px;">${sd.emoji||'🌿'}</span>
-      <span style="font-size:11px;font-weight:900;color:#fff;">${sd.name}</span>
-      <span style="font-size:10px;color:#888;">×${crops.length}</span>
-      <span style="font-size:12px;font-weight:900;color:#f5c842;">¢${totalVal.toLocaleString()}</span>
-      <button style="margin-top:4px;background:linear-gradient(135deg,#7a4800,#cc8808);border:none;color:#fff;border-radius:8px;padding:5px 12px;cursor:pointer;font-size:11px;font-weight:900;"
-        onclick="sellCrop('${key}')">Sell All</button>
+    card.className = 'sg-card';
+    card.style.cursor='pointer';
+    const mutLabel = g.mutation ? ` <span style="color:#ffaa44">(${g.mutation})</span>` : '';
+    card.innerHTML = `
+      <div class="sg-icon">${sd.emoji}</div>
+      <div class="sg-name">${sd.name}${mutLabel}</div>
+      <div class="sg-stock">${g.items.length}× in stock</div>
+      <div class="sg-price" style="color:#ffee88">¢${total.toLocaleString()} total</div>
+      <div style="font-size:10px;color:#8aaa99;margin-top:2px">Tap to sell all</div>
     `;
-    card.onmouseenter=()=>card.style.background='rgba(255,255,255,0.07)';
-    card.onmouseleave=()=>card.style.background='';
+    card.onclick = ()=> sellGroup(g.type, g.mutation, 'all');
     grid.appendChild(card);
   });
-
-  if(!hasAnything){
-    grid.innerHTML='<div style="color:#555;font-size:13px;text-align:center;padding:28px;grid-column:1/-1;">No crops to sell yet — harvest some first! 🌾</div>';
-  }
 }
 
-function sellCrop(key){
-  const crops = state.harvest[key];
-  if(!crops||!crops.length) return;
-  const sd = SEEDS[key];
-  if(!sd) return;
-  let earned = 0;
-  crops.forEach(crop=>{
-    const mutM = crop.mutationType ? (crop.mutationType==='rainbow'?4:crop.mutationType==='mau'?10:crop.mutationType==='golden'?2:1.5) : 1;
-    earned += Math.floor(sd.sellPrice * mutM * sellMult() * _petSellMult);
-  });
-  state.harvest[key] = [];
-  state.sheckles += earned;
-  updateHUD(); renderSell(); if(invOpen) renderInventory();
-  notify(`💰 Sold ${crops.length}× ${sd.name} for ¢${earned.toLocaleString()}!`, 'gold');
-  if(typeof mpPushFarmState==='function') mpPushFarmState();
-}
-
-function sellAll(){
-  let total = 0;
-  Object.keys(state.harvest).forEach(key=>{
-    const crops = state.harvest[key];
-    if(!crops||!crops.length) return;
-    const sd = SEEDS[key];
-    if(!sd) return;
-    crops.forEach(crop=>{
-      const mutM = crop.mutationType?(crop.mutationType==='rainbow'?4:crop.mutationType==='mau'?10:crop.mutationType==='golden'?2:1.5):1;
-      total += Math.floor(sd.sellPrice * mutM * sellMult() * _petSellMult);
-    });
-    state.harvest[key] = [];
-  });
-  if(total===0){ notify('Nothing to sell!','warn'); return; }
-  state.sheckles += total;
-  updateHUD(); renderSell(); if(invOpen) renderInventory();
-  notify(`💰 Sold everything for ¢${total.toLocaleString()}!`, 'gold');
-  if(typeof mpPushFarmState==='function') mpPushFarmState();
-}
-
-// ── renderUpgradeStand ────────────────────────────────────────────────────────
+// ── renderUpgradeStand ────────────────────────────────
 function renderUpgradeStand(){
   const grid = document.getElementById('upgrade-stand-grid');
   if(!grid) return;
   grid.innerHTML = '';
-
+  grid.className = 'upg-grid';
   Object.entries(UPGRADES).forEach(([key, upg])=>{
     const owned = !!state.upgrades[key];
-    const reqOk = !upg.requires || !!state.upgrades[upg.requires];
+    const reqMet = !upg.requires || !!state.upgrades[upg.requires];
+    const canAfford = state.sheckles >= upg.price;
     const card = document.createElement('div');
-    card.style.cssText=`display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;
-      border:1.5px solid ${owned?'rgba(80,220,120,0.45)':reqOk?'rgba(160,80,255,0.3)':'rgba(255,255,255,0.08)'};
-      background:${owned?'rgba(40,120,40,0.18)':'rgba(255,255,255,0.03)'};
-      transition:all 0.15s;cursor:${owned||!reqOk?'default':'pointer'};
-      opacity:${reqOk||owned?1:0.45};`;
-    const btnHtml = owned
-      ? `<span style="color:#4dff91;font-size:12px;font-weight:900;">✓ Owned</span>`
-      : reqOk
-        ? `<button onclick="buyUpgrade('${key}')" style="padding:6px 14px;border:none;border-radius:8px;background:linear-gradient(135deg,#5500aa,#9922cc);color:#fff;font-size:12px;font-weight:900;cursor:pointer;">¢${upg.price.toLocaleString()}</button>`
-        : `<span style="color:#555;font-size:11px;">Requires ${UPGRADES[upg.requires]?.name||upg.requires}</span>`;
-    card.innerHTML=`
-      <span style="font-size:28px;">${upg.emoji}</span>
-      <div style="flex:1;">
-        <div style="font-size:13px;font-weight:900;color:${owned?'#4dff91':'#fff'};">${upg.name}</div>
-        <div style="font-size:11px;color:#888;margin-top:2px;">${upg.desc}</div>
-      </div>
-      ${btnHtml}
+    card.className = 'upg-card' + (owned ? ' maxed' : '');
+    card.innerHTML = `
+      <div class="upg-icon">${upg.emoji}</div>
+      <div class="upg-name">${upg.name}</div>
+      <div class="upg-desc">${upg.desc}</div>
+      <div class="upg-price">${owned ? '✅ Owned' : `¢${upg.price.toLocaleString()}`}</div>
+      ${upg.requires && !owned ? `<div style="font-size:10px;color:#ff9966;margin-top:3px">${reqMet?'':'Requires: '+UPGRADES[upg.requires]?.name}</div>` : ''}
     `;
-    if(!owned&&reqOk){ card.onmouseenter=()=>card.style.background='rgba(120,60,200,0.12)'; card.onmouseleave=()=>card.style.background='rgba(255,255,255,0.03)'; }
+    if(!owned && reqMet){
+      card.style.cursor='pointer';
+      card.onclick=()=>buyUpgrade(key);
+      if(!canAfford) card.style.opacity='0.55';
+    } else if(owned){
+      card.style.cursor='default';
+    } else {
+      card.style.opacity='0.4'; card.style.cursor='not-allowed';
+    }
     grid.appendChild(card);
   });
 }
 
+// ── buyUpgrade ─────────────────────────────────────────
 function buyUpgrade(key){
   const upg = UPGRADES[key];
-  if(!upg){ return; }
+  if(!upg) return;
   if(state.upgrades[key]){ notify('Already owned!','warn'); return; }
-  if(upg.requires && !state.upgrades[upg.requires]){ notify(`Requires ${UPGRADES[upg.requires]?.name||upg.requires} first!`,'warn'); return; }
-  if(state.sheckles < upg.price){ notify(`Need ¢${upg.price.toLocaleString()} — only have ¢${Math.floor(state.sheckles).toLocaleString()}`,'warn'); return; }
+  if(upg.requires && !state.upgrades[upg.requires]){ notify(`Requires ${UPGRADES[upg.requires]?.name} first!`,'warn'); return; }
+  if(state.sheckles < upg.price){ notify(`Need ¢${upg.price.toLocaleString()} — not enough Sheckles!`,'warn'); return; }
   state.sheckles -= upg.price;
   state.upgrades[key] = true;
-  updateHUD(); renderUpgradeStand();
-  notify(`⚗️ Upgrade unlocked: ${upg.name}!`, 'gold');
-  if(typeof mpPushFarmState==='function') mpPushFarmState();
-}
-
-function closeUpgradeShop(){
-  document.getElementById('upgrade-dialog').style.display='none';
-  closeNavTab();
+  updateHUD(); updateUpgradesHUD(); renderUpgradeStand();
+  mpPushFarmState();
+  notify(`${upg.emoji} ${upg.name} unlocked!`,'gold');
 }
 
 function init(){
